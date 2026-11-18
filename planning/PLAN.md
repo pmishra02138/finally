@@ -172,12 +172,21 @@ Both the simulator and the Massive client implement the same abstract interface 
 - Occasional random "events" — sudden 2-5% moves on a ticker for drama
 - Starts from realistic seed prices (e.g., AAPL ~$190, GOOGL ~$175, etc.) and seeds newly added unknown tickers in the $50–$300 range immediately upon `add_ticker()`
 - Runs as an in-process background task — no external dependencies
+- Known characteristics (accepted for now; tuning is a product decision, see `planning/MARKET_SIMULATOR.md` §4, §8): at the default `event_probability=0.001`, random events dominate movement (~9.7 %/hour per ticker vs ~0.5 %/hour from GBM), and symmetric ± shocks carry a slight downward bias (~−0.5 %/hour). Prices also restart from seed values on every container restart, so P&L on open positions can jump after a restart.
+
+Full design: `planning/MARKET_SIMULATOR.md`.
 
 ### Massive API (Optional)
 
-- REST API polling (not WebSocket) — simpler, works on all tiers
-- Polls for the union of all tracked tickers (`watchlist ∪ positions`) on a fixed 15-second default interval (`poll_interval=15.0`, compatible with the free tier limit of 5 calls/min)
-- Parses REST response into the same format as the simulator
+Full reference: `planning/MASSIVE_API.md`; interface design: `planning/MARKET_INTERFACE.md`.
+
+- REST API polling (not WebSocket), using the synchronous `massive.RESTClient` via `asyncio.to_thread`. Construct it with an **explicit** `api_key=` (its default reads the env var at import time, before `python-dotenv` runs) and `retries=1` (built-in retries also fire on `429`, burning rate-limit budget)
+- **Two fetch strategies, selected at runtime**, because the plan behind a key is unknown and the free **Stocks Basic plan has no snapshot access**:
+  - `snapshot` (default; paid plans, 15-min delayed or real-time): one `get_snapshot_all()` call per poll for the union of all tracked tickers (`watchlist ∪ positions`), on a 15-second default interval (`poll_interval=15.0` → 4 calls/min, under the free tier's 5 calls/min)
+  - `eod` (free plan): if the snapshot call fails with a `NOT_AUTHORIZED` response, switch permanently to end-of-day closes from `get_grouped_daily_aggs(date)` (one call returns the whole market; walk back day by day over weekends/holidays), polling every `max(poll_interval, 300)` seconds. Log the switch once at WARNING. In this mode `add_ticker()` fills the new ticker's price immediately from the last fetched bars (no extra call)
+- Parses responses with the **real model fields**: price from `last_trade.price`, falling back to `min.close` → `day.close` → `prev_day.close` (treat `0`/`None` as missing; `day` is zeroed after the 3:30 AM ET reset); timestamp from `last_trade.sip_timestamp` (or `updated`), which is in **nanoseconds** (÷ `1e9`). `LastTrade` has no `timestamp` attribute
+- Each poll works on a **copy** of the tracked-ticker list, and discards results for tickers removed while the request was in flight
+- Writes into `PriceCache` in the same format as the simulator
 
 ### Shared Price Cache
 
@@ -201,14 +210,20 @@ Both the simulator and the Massive client implement the same abstract interface 
 
 The market data subsystem is complete and tested, but it does **not** yet implement the following behaviours that the rest of this plan relies on. Fixing them is the **backend agent's first task (milestone M0, §13)**. Until then, agents must not assume these behaviours exist.
 
+T0.5–T0.8 were found on 2026-11-17 by reading the pinned `massive==2.2.0` source and Massive's docs (see `planning/MASSIVE_API.md`). **Until T0.5 is fixed, Massive mode caches no prices at all.** The simulator path is unaffected.
+
 | # | Required behaviour | Current code | Fix |
 |---|---|---|---|
 | T0.1 | Sources normalize tickers | `simulator.py:242-255` (`SimulatorDataSource.add_ticker/remove_ticker`) does not normalize; `massive_client.py` `start()` (line 43) does not normalize | Apply `strip().upper()` in `start()`, `add_ticker()`, `remove_ticker()` of both sources |
 | T0.2 | `PriceCache.remove()` bumps `version` | `cache.py:59-62` only pops the entry | Increment `_version` inside the lock |
 | T0.3 | Empty cache emits `data: {}` | `stream.py` guards the yield with `if prices:` | Emit the (possibly empty) JSON object whenever the version changes |
 | T0.4 | Fresh router per factory call | `stream.py:17` module-level `router` | Create the `APIRouter` inside `create_stream_router()` |
+| T0.5 | Massive snapshots are parsed with real field names | `massive_client.py` `_poll_once` reads `snap.last_trade.timestamp / 1000.0`. `LastTrade` has no `timestamp` attribute, so every snapshot raises `AttributeError` and is skipped | Use `last_trade.sip_timestamp / 1e9` (fallback `snap.updated / 1e9`, then `time.time()`); price fallback chain `last_trade.price` → `min.close` → `day.close` → `prev_day.close`, ignoring `0`/`None` (`MASSIVE_API.md` §3.3) |
+| T0.6 | Free-plan keys get prices | `MassiveDataSource` only calls `get_snapshot_all()`, which the free Stocks Basic plan is not entitled to (`BadResponse` containing `NOT_AUTHORIZED`), so free users get no prices | Add the `eod` strategy described above (grouped daily, walk-back, `max(poll_interval, 300)` s, fill on `add_ticker`) (`MARKET_INTERFACE.md` §5) |
+| T0.7 | Massive tests exercise real response models | `tests/market/test_massive.py` builds snapshots from `MagicMock`, which accepts any attribute and hid T0.5 | Build fixtures with `TickerSnapshot.from_dict(...)` / `GroupedDailyAgg.from_dict(...)` using real JSON keys. Cover the ns timestamp, `last_trade=None` fallback, zeroed `day`, the `NOT_AUTHORIZED` → `eod` switch, and grouped-daily walk-back |
+| T0.8 | Massive client is configured safely | `RESTClient(api_key=...)` uses the default `retries=3` (also retries `429`); `_fetch_snapshots` reads the mutable `self._tickers` from a worker thread | `RESTClient(api_key=..., retries=1)`; pass a copied ticker list into the thread and drop results for tickers removed mid-poll |
 
-Each fix needs a unit test in `backend/tests/market/`. Update `planning/MARKET_DATA_SUMMARY.md` when they are done.
+Each fix needs a unit test in `backend/tests/market/` (T0.7 is itself the test fix that guards T0.5/T0.6). Update `planning/MARKET_DATA_SUMMARY.md` when they are done.
 
 ---
 
@@ -623,7 +638,7 @@ Agents build FinAlly in the milestones below, in order. A milestone is **done** 
 
 | Milestone | Owner | Scope | Acceptance check |
 |---|---|---|---|
-| **M0: Market-data fixes** | Backend | Task 0 items T0.1–T0.4 (§6) | `uv run --extra dev pytest` green, including new tests for each fix; `MARKET_DATA_SUMMARY.md` updated |
+| **M0: Market-data fixes** | Backend | Task 0 items T0.1–T0.8 (§6) | `uv run --extra dev pytest` green, including new tests for each fix; Massive tests use real `massive` model fixtures (no `MagicMock` snapshots); `MARKET_DATA_SUMMARY.md` updated |
 | **M1: DB and REST API** | Backend | `backend/app/db/` (schema, seed, lifespan init), portfolio/watchlist/health routes, snapshot task, `APP_PASSWORD` middleware | pytest green; `curl` responses for every §8 endpoint match `/openapi.json` and the §8 examples |
 | **M2: LLM chat** | Backend | Mock mode first, then real `acompletion` integration, fallback handling, rate limit | Mock-mode tests green; one real call succeeds with `OPENROUTER_API_KEY`; SSE keeps streaming during a chat request |
 | **M3: Frontend** | Frontend | All §10 components; types generated from `/openapi.json` | `npm run build` produces a static export; frontend unit tests green; works end-to-end against the running backend |
