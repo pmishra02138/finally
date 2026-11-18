@@ -101,3 +101,13 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+
+def test_remove_bumps_version():
+    cache = PriceCache()
+    cache.update("AAPL", 190.0)
+    v = cache.version
+    cache.remove("AAPL")
+    assert cache.version == v + 1
+    cache.remove("AAPL")  # absent: no bump
+    assert cache.version == v + 1
