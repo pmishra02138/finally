@@ -44,7 +44,7 @@ MarketDataSource (ABC)
 
 ## Test Suite
 
-**73 tests, all passing.** 6 test modules in `backend/tests/market/`.
+**89 tests, all passing.** 7 test modules in `backend/tests/market/`.
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -102,3 +102,15 @@ await source.remove_ticker("GOOGL")
 # Shutdown
 await source.stop()
 ```
+
+
+## Task 0 (T0.1–T0.8) — Done
+
+- T0.1 `SimulatorDataSource` and `MassiveDataSource` normalize tickers (`strip().upper()`) in `start/add_ticker/remove_ticker`.
+- T0.2 `PriceCache.remove()` bumps `version` (only if the ticker existed).
+- T0.3 `stream.py` emits `data: {}` when the cache is empty.
+- T0.4 `create_stream_router()` builds a fresh `APIRouter` per call.
+- T0.5 Massive parsing uses `last_trade.sip_timestamp / 1e9` (fallback `updated`, then `time.time()`) and the price chain `last_trade` → `min` → `day` → `prev_day`, ignoring 0/None (`extract_price`).
+- T0.6 `eod` strategy: on `NOT_AUTHORIZED` switch permanently to `get_grouped_daily_aggs` (7-day walk-back, `max(poll_interval, 300)` s, `add_ticker` fills from last bars).
+- T0.7 `test_massive.py` uses `TickerSnapshot.from_dict` / `GroupedDailyAgg.from_dict` (no `MagicMock` snapshots).
+- T0.8 `RESTClient(api_key=..., retries=1)`; poll works on a copied ticker list and drops results for tickers removed mid-poll.

@@ -136,3 +136,16 @@ class TestSimulatorDataSource:
         # Just verify it starts and stops cleanly
         await asyncio.sleep(0.2)
         await source.stop()
+
+
+async def test_source_normalizes_tickers():
+    cache = PriceCache()
+    source = SimulatorDataSource(price_cache=cache, update_interval=60.0)
+    await source.start([" aapl "])
+    await source.add_ticker(" pypl")
+    assert "AAPL" in cache and "PYPL" in cache
+    assert sorted(source.get_tickers()) == ["AAPL", "PYPL"]
+    await source.remove_ticker("pypl ")
+    assert "PYPL" not in cache
+    assert source.get_tickers() == ["AAPL"]
+    await source.stop()
