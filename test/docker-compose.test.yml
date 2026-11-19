@@ -1,0 +1,36 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      - LLM_MOCK=true
+      - MASSIVE_API_KEY=
+      - APP_PASSWORD=
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "uv",
+          "run",
+          "--no-sync",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.50.0-noble
+    working_dir: /tests
+    volumes:
+      - .:/tests
+    environment:
+      - BASE_URL=http://app:8000
+    depends_on:
+      app:
+        condition: service_healthy
+    command: >
+      sh -c "npm install --no-audit --no-fund && npx playwright test"
