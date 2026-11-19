@@ -4,52 +4,43 @@ FastAPI backend for the FinAlly AI Trading Workstation.
 
 ## Structure
 
-- `app/` - Application code
-  - `market/` - Market data subsystem
-    - `models.py` - PriceUpdate dataclass
-    - `cache.py` - Thread-safe price cache
-    - `interface.py` - MarketDataSource abstract interface
-    - `simulator.py` - GBM-based market simulator
-    - `massive_client.py` - Massive/Polygon.io API client
-    - `factory.py` - Data source factory
-    - `stream.py` - SSE streaming endpoint
-    - `seed_prices.py` - Default ticker prices and parameters
+- `app/` — Application code
+  - `main.py` — FastAPI app factory, lifespan (DB init, market data, 30s snapshot loop), `APP_PASSWORD` middleware, `/api/health`, static file serving
+  - `schemas.py` — Shared Pydantic request/response models and ticker/quantity validators
+  - `db/` — SQLite schema, default seed data, and database helpers
+  - `services/` — Portfolio/trade accounting, watchlist synchronization, and LLM chat orchestration
+  - `routes/` — REST API routers (`/api/portfolio`, `/api/watchlist`, `/api/chat`)
+  - `market/` — Market data subsystem (GBM simulator, Massive API poller, `PriceCache`, SSE `/api/stream/prices`)
+- `market_data_demo.py` — Rich terminal dashboard demo for the GBM market simulator
+- `tests/` — Pytest unit and integration test suite (`market/`, `test_db.py`, `test_portfolio.py`, `test_watchlist.py`, `test_chat.py`, `test_security_and_app.py`)
 
-- `tests/` - Unit and integration tests
-  - `market/` - Market data tests
-
-## Running Tests
+## Running Locally
 
 ```bash
-# Install dependencies
-uv sync --dev
+cd backend
+uv sync --python 3.12 --extra dev
 
-# Run all tests
-uv run pytest
+# Run the FastAPI server (single worker)
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 
-# Run with coverage
-uv run pytest --cov=app --cov-report=html
+# Run the Rich market data simulator demo
+uv run market_data_demo.py
+```
 
-# Run specific test file
-uv run pytest tests/market/test_simulator.py
+## Running Tests & Linting
 
-# Run with verbose output
+```bash
+cd backend
 uv run pytest -v
+uv run ruff check app tests
 ```
 
 ## Environment Variables
 
-- `MASSIVE_API_KEY` - Optional. If set, use real market data from Massive API. If not set, use the built-in simulator.
+See `../.env.example` for the full template:
 
-## Development
-
-```bash
-# Install dependencies
-uv sync --dev
-
-# Run linter
-uv run ruff check .
-
-# Format code
-uv run ruff format .
-```
+- `OPENROUTER_API_KEY` — OpenRouter API key for LLM chat (`openrouter/openai/gpt-oss-120b` via Cerebras)
+- `MASSIVE_API_KEY` — Optional; uses Massive API when set, otherwise built-in GBM simulator
+- `LLM_MOCK` — Optional; set to `true` for deterministic mock LLM responses
+- `DB_PATH` — Optional; overrides SQLite path (defaults to `<repo_root>/db/finally.db` locally or `/app/db/finally.db` in Docker)
+- `APP_PASSWORD` — Optional locally; when set, protects `/api/*` (except `/api/health`) via `X-App-Password` header (or `?key=` on `/api/stream/prices`)
