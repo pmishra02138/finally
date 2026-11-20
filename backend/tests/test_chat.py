@@ -1,4 +1,4 @@
-"""Unit and API tests for LLM chat (mock mode, Cerebras acompletion, retries, rate limiting)."""
+"""Unit and API tests for LLM chat (mock mode, Gemini acompletion, retries, rate limiting)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
 from app.schemas import LLMResponse
-from app.services.chat import EXTRA_BODY, FALLBACK_MESSAGE, MODEL
+from app.services.chat import FALLBACK_MESSAGE, MODEL
 
 
 def _make_completion(content: str):
@@ -91,7 +91,9 @@ async def test_mock_mode_buy_sell_watchlist_and_history(mock_chat_client) -> Non
 
 
 async def test_real_llm_acompletion_retry_and_fallback(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.main.load_dotenv", lambda *_a, **_kw: False)
     monkeypatch.setenv("LLM_MOCK", "false")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = create_app(db_path=tmp_path / "chat_real.db", snapshot_interval=3600.0)
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
@@ -115,7 +117,7 @@ async def test_real_llm_acompletion_retry_and_fallback(tmp_path: Path, monkeypat
             assert kwargs["model"] == MODEL
             assert kwargs["response_format"] is LLMResponse
             assert kwargs["reasoning_effort"] == "low"
-            assert kwargs["extra_body"] == EXTRA_BODY
+            assert "extra_body" not in kwargs
 
             # Both attempts fail -> HTTP 200 fallback, persisted
             mock_fail = AsyncMock(side_effect=[_make_completion(""), ValueError("still bad")])
@@ -187,3 +189,31 @@ async def test_chat_rate_limit(tmp_path: Path, monkeypatch) -> None:
                 assert r.status_code == 200
             r4 = await client.post("/api/chat", json={"message": "status"})
             assert r4.status_code == 429
+
+
+async def test_gemini_api_key_uses_gemini_model_without_extra_body(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("app.main.load_dotenv", lambda *_a, **_kw: False)
+    monkeypatch.setenv("LLM_MOCK", "false")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    app = create_app(db_path=tmp_path / "chat_gemini.db", snapshot_interval=3600.0)
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            valid_json = LLMResponse(
+                message="Holding steady.",
+                trades=[],
+                watchlist_changes=[],
+            ).model_dump_json()
+
+            mock_acomp = AsyncMock(return_value=_make_completion(valid_json))
+            with patch("app.services.chat.litellm.acompletion", mock_acomp):
+                resp = await client.post("/api/chat", json={"message": "How am I doing?"})
+
+            assert resp.status_code == 200
+            assert resp.json()["content"] == "Holding steady."
+            kwargs = mock_acomp.call_args.kwargs
+            assert kwargs["model"] == MODEL
+            assert kwargs["api_key"] == "test-gemini-key"
+            assert "extra_body" not in kwargs

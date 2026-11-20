@@ -66,7 +66,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 - **Backend**: FastAPI (Python), managed as a `uv` project
 - **Database**: SQLite, single file at `db/finally.db`, volume-mounted for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
-- **AI integration**: LiteLLM → OpenRouter (Cerebras for fast inference), with structured outputs for trade execution
+- **AI integration**: LiteLLM → Google AI Studio (`gemini/gemini-3.1-flash-lite`), with structured outputs for trade execution
 - **Market data**: Environment-variable driven — simulator by default, real data via Massive API if key provided
 
 ### Why These Choices
@@ -123,8 +123,8 @@ finally/
 ## 5. Environment Variables
 
 ```bash
-# Required: OpenRouter API key for LLM chat functionality
-OPENROUTER_API_KEY=your-openrouter-api-key-here
+# Required: Google AI Studio (Gemini) API key for LLM chat functionality
+GEMINI_API_KEY=your-gemini-api-key-here
 
 # Optional: Massive (Polygon.io) API key for real market data
 # If not set, the built-in market simulator is used (recommended for most users)
@@ -405,11 +405,11 @@ All operational tables (`watchlist`, `positions`, `trades`, `portfolio_snapshots
 
 ## 9. LLM Integration
 
-When writing code to make calls to LLMs, use cerebras-inference skill to use LiteLLM via OpenRouter to the `openrouter/openai/gpt-oss-120b` model with Cerebras as the inference provider. Structured Outputs should be used to interpret the results.
+When writing code to make calls to LLMs, use LiteLLM with Google AI Studio (`gemini/gemini-3.1-flash-lite`). Structured Outputs should be used to interpret the results.
 
-> **Important: use the async API.** The skill's examples call synchronous `litellm.completion(...)`. Calling that from an `async def` FastAPI handler blocks the event loop, which freezes simulator ticks, SSE streams for every client, and trades for the whole duration of each chat request. The backend **must** call **`await litellm.acompletion(...)`** with the same model, `response_format`, `reasoning_effort` and `extra_body` arguments, wrapped in `asyncio.wait_for(..., timeout=30)`.
+> **Important: use the async API.** Calling synchronous `litellm.completion(...)` from an `async def` FastAPI handler blocks the event loop, which freezes simulator ticks, SSE streams for every client, and trades for the whole duration of each chat request. The backend **must** call **`await litellm.acompletion(...)`** with `response_format` and `reasoning_effort`, wrapped in `asyncio.wait_for(..., timeout=30)`.
 
-There is an OPENROUTER_API_KEY in the .env file in the project root.
+There is a `GEMINI_API_KEY` in the `.env` file in the project root.
 
 ### How It Works
 
@@ -418,11 +418,11 @@ When the user sends a chat message, the backend performs a **single LLM call** p
 1. Loads the user's current portfolio context (cash, positions with P&L, watchlist with live prices, total portfolio value)
 2. Loads the most recent 20 messages from the `chat_messages` table as conversation context, and persists the incoming user message
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
-4. Calls the LLM via `await litellm.acompletion(...)` → OpenRouter with a 30-second timeout, requesting structured output per the cerebras-inference skill (or uses mock mode if `LLM_MOCK=true`)
+4. Calls the LLM via `await litellm.acompletion(...)` → Google AI Studio with a 30-second timeout, requesting structured output (or uses mock mode if `LLM_MOCK=true`)
 5. Parses the complete structured JSON response with `LLMResponse.model_validate_json(...)`. On timeout, provider error, or invalid JSON, it retries **once**. If that also fails, it returns **HTTP 200** with a fallback assistant message (e.g. "Sorry, I couldn't process that request. Please try again.") and `actions: []`. The UI keeps a single success code path, and the fallback is persisted like any other assistant message.
 6. Auto-executes each requested trade and watchlist change in order, capturing per-action outcomes (`status: "executed" | "failed"` and `error: str | None`)
 7. Stores the assistant message and the resulting `actions` array in `chat_messages`
-8. Returns `{id, role: "assistant", content, actions, created_at}` to the frontend (no token-by-token streaming — Cerebras inference is fast enough that a loading indicator is sufficient), and the UI displays both executed and failed action badges inline
+8. Returns `{id, role: "assistant", content, actions, created_at}` to the frontend (no token-by-token streaming — Gemini Flash inference is fast enough that a loading indicator is sufficient), and the UI displays both executed and failed action badges inline
 
 ### Structured Output Schema
 
@@ -485,7 +485,7 @@ The LLM should be prompted as "FinAlly, an AI trading assistant" with instructio
 
 ### LLM Mock Mode
 
-When `LLM_MOCK=true`, the backend returns deterministic mock responses instead of calling OpenRouter using case-insensitive pattern matching on the user's message:
+When `LLM_MOCK=true`, the backend returns deterministic mock responses instead of calling Gemini using case-insensitive pattern matching on the user's message:
 - `"buy <qty> <ticker>"` → returns a confirmation message and `trades: [{"ticker": "<TICKER>", "side": "buy", "quantity": <qty>}]`
 - `"sell <qty> <ticker>"` → returns a confirmation message and `trades: [{"ticker": "<TICKER>", "side": "sell", "quantity": <qty>}]`
 - `"watch <ticker>"` or `"add <ticker>"` → returns a confirmation message and `watchlist_changes: [{"ticker": "<TICKER>", "action": "add"}]`
@@ -584,7 +584,7 @@ All scripts should be idempotent — safe to run multiple times.
 
 ### Security
 
-The app has no user accounts, and `/api/chat` spends the owner's OpenRouter credits, so exposure is controlled as follows:
+The app has no user accounts, and `/api/chat` uses the owner's Gemini API quota, so exposure is controlled as follows:
 
 - **Local default**: The port is bound to `127.0.0.1` only (start scripts and docs). No password is needed.
 - **`APP_PASSWORD`**: When set, a small FastAPI middleware requires it on every `/api/*` request, sent as the `X-App-Password` header (and, because `EventSource` cannot set headers, as a `?key=` query parameter on `/api/stream/prices`). Missing or wrong values get `401`. The frontend prompts for the password once and keeps it in `sessionStorage`. `/api/health` is exempt.
@@ -640,7 +640,7 @@ Agents build FinAlly in the milestones below, in order. A milestone is **done** 
 |---|---|---|---|
 | **M0: Market-data fixes** | Backend | Task 0 items T0.1–T0.8 (§6) | `uv run --extra dev pytest` green, including new tests for each fix; Massive tests use real `massive` model fixtures (no `MagicMock` snapshots); `MARKET_DATA_SUMMARY.md` updated |
 | **M1: DB and REST API** | Backend | `backend/app/db/` (schema, seed, lifespan init), portfolio/watchlist/health routes, snapshot task, `APP_PASSWORD` middleware | pytest green; `curl` responses for every §8 endpoint match `/openapi.json` and the §8 examples |
-| **M2: LLM chat** | Backend | Mock mode first, then real `acompletion` integration, fallback handling, rate limit | Mock-mode tests green; one real call succeeds with `OPENROUTER_API_KEY`; SSE keeps streaming during a chat request |
+| **M2: LLM chat** | Backend | Mock mode first, then real `acompletion` integration, fallback handling, rate limit | Mock-mode tests green; one real call succeeds with `GEMINI_API_KEY`; SSE keeps streaming during a chat request |
 | **M3: Frontend** | Frontend | All §10 components; types generated from `/openapi.json` | `npm run build` produces a static export; frontend unit tests green; works end-to-end against the running backend |
 | **M4: Docker and scripts** | DevOps | Dockerfile per §11 image layout, start/stop scripts, `.env.example`, `.gitignore` entries | `scripts/start_mac.sh` → app on `http://localhost:8000`, `/api/health` OK, data survives a restart |
 | **M5: E2E tests** | QA | `test/docker-compose.test.yml` and the §12 Playwright scenarios | `docker compose -f test/docker-compose.test.yml up --exit-code-from playwright` passes |

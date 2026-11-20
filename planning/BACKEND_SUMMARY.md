@@ -8,7 +8,7 @@ The FinAlly backend (`backend/app/`) is a single-process FastAPI application man
 
 1. **Market Data Subsystem (`app/market/`, M0)** — `MarketDataSource` (`SimulatorDataSource` GBM default + `MassiveDataSource` snapshot/EOD poller), thread-safe `PriceCache`, SSE router (`/api/stream/prices`), and Rich terminal demo (`backend/market_data_demo.py`). See `planning/MARKET_DATA_SUMMARY.md` for market-data-specific details.
 2. **Database & REST API (`app/db/`, `app/services/`, `app/routes/`, `app/main.py`, M1)** — SQLite persistence initialized during FastAPI lifespan startup, portfolio & atomic trade accounting, watchlist CRUD synchronized with `MarketDataSource`, periodic portfolio snapshots, health check, OpenAPI schema, and optional `APP_PASSWORD` middleware.
-3. **LLM Chat Assistant (`app/services/chat.py`, `app/routes/chat.py`, M2)** — Async LiteLLM (`litellm.acompletion`) integration via OpenRouter (`openrouter/openai/gpt-oss-120b` with Cerebras provider ordering) using strict Pydantic structured outputs (`LLMResponse`), deterministic `LLM_MOCK=true` mode, single retry with HTTP 200 fallback, auto-execution of trades and watchlist changes, and in-memory 10 req/min rate limiting.
+3. **LLM Chat Assistant (`app/services/chat.py`, `app/routes/chat.py`, M2)** — Async LiteLLM (`litellm.acompletion`) integration with Google AI Studio (`gemini/gemini-3.1-flash-lite`) using strict Pydantic structured outputs (`LLMResponse`), deterministic `LLM_MOCK=true` mode, single retry with HTTP 200 fallback, auto-execution of trades and watchlist changes, and in-memory 10 req/min rate limiting.
 
 ## Module Map
 
@@ -20,7 +20,7 @@ The FinAlly backend (`backend/app/`) is a single-process FastAPI application man
 | `app/db/database.py` | `Database` wrapper, `DB_PATH` resolution (local `<repo_root>/db/finally.db` vs Docker `/app/db/finally.db`), idempotent seeding, transaction context manager |
 | `app/services/portfolio.py` | `PortfolioService` — valuation (with `avg_cost` fallback when price is uncached), atomic buy/sell execution, weighted-average cost, post-trade snapshot recording |
 | `app/services/watchlist.py` | `WatchlistService` — watchlist queries and add/remove coordinated with `MarketDataSource` (retains tracked ticker if still held in `positions`) |
-| `app/services/chat.py` | `ChatService` & `FixedWindowRateLimiter` — portfolio context builder, mock mode parser, async Cerebras/OpenRouter call with 30s timeout & 1 retry, action auto-execution |
+| `app/services/chat.py` | `ChatService` & `FixedWindowRateLimiter` — portfolio context builder, mock mode parser, async Gemini call with 30s timeout & 1 retry, action auto-execution |
 | `app/routes/portfolio.py` | `GET /api/portfolio`, `POST /api/portfolio/trade`, `GET /api/portfolio/history` |
 | `app/routes/watchlist.py` | `GET /api/watchlist`, `POST /api/watchlist`, `DELETE /api/watchlist/{ticker}` |
 | `app/routes/chat.py` | `GET /api/chat/history`, `POST /api/chat` |

@@ -39,7 +39,7 @@ uv run ruff check app tests
 
 See `../.env.example` for the full template:
 
-- `OPENROUTER_API_KEY` — OpenRouter API key for LLM chat (`openrouter/openai/gpt-oss-120b` via Cerebras)
+- `GEMINI_API_KEY` — Google AI Studio API key for LLM chat (`gemini/gemini-3.1-flash-lite`)
 - `MASSIVE_API_KEY` — Optional; uses Massive API when set, otherwise built-in GBM simulator
 - `LLM_MOCK` — Optional; set to `true` for deterministic mock LLM responses
 - `DB_PATH` — Optional; overrides SQLite path (defaults to `<repo_root>/db/finally.db` locally or `/app/db/finally.db` in Docker)

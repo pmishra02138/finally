@@ -1,4 +1,4 @@
-"""LLM chat service with Cerebras/OpenRouter structured outputs, mock mode, and auto-execution."""
+"""LLM chat service with Gemini (Google AI Studio) structured outputs, mock mode, and auto-execution."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -31,8 +32,7 @@ import litellm  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-MODEL = "openrouter/openai/gpt-oss-120b"
-EXTRA_BODY = {"provider": {"order": ["cerebras"]}}
+MODEL = "gemini/gemini-3.1-flash-lite"
 LLM_TIMEOUT_SECONDS = 30.0
 FALLBACK_MESSAGE = "Sorry, I couldn't process that request. Please try again."
 
@@ -202,14 +202,18 @@ class ChatService:
         )
 
     async def _call_llm_once(self, messages: list[dict[str, str]]) -> LLMResponse:
+        gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        kwargs: dict[str, Any] = {
+            "model": MODEL,
+            "messages": messages,
+            "response_format": LLMResponse,
+            "reasoning_effort": "low",
+        }
+        if gemini_key:
+            kwargs["api_key"] = gemini_key
+
         response = await asyncio.wait_for(
-            litellm.acompletion(
-                model=MODEL,
-                messages=messages,
-                response_format=LLMResponse,
-                reasoning_effort="low",
-                extra_body=EXTRA_BODY,
-            ),
+            litellm.acompletion(**kwargs),
             timeout=LLM_TIMEOUT_SECONDS,
         )
         content = response.choices[0].message.content
